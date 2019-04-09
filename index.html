@@ -1,0 +1,154 @@
+<!doctype html>
+<script src="./mat4.js"></script>
+<script>
+    window.memory = new WebAssembly.Memory({initial: 1024});
+
+    function grow_memory(pages = 0) {
+        let prev = memory.grow(pages);
+        window.U8 = new Uint8Array(memory.buffer);
+        window.U32 = new Uint32Array(memory.buffer);
+        window.F32 = new Float32Array(memory.buffer);
+        window.F64 = new Float64Array(memory.buffer);
+        return prev;
+    }
+
+    grow_memory();
+
+    function get_string(ptr) {
+        var start = (ptr >>>= 0);
+        while (U8[ptr++]);
+        return String.fromCharCode(...U8.subarray(start, ptr - 1));
+    }
+
+    function get_uint(ptr) {
+        return U32[ptr >> 2];
+    }
+
+    function get_float(ptr) {
+        return F32[ptr >> 2];
+    }
+
+    function get_double(ptr) {
+        return F64[ptr >> 3];
+    }
+
+    function sprintf(ptr, base) {
+        var s = get_string(ptr);
+        return base
+            ? s.replace(/%([dfisu]|lf)/g, ($0, $1) => {
+                var val;
+                return base +=
+                    $1 === "u"  ? (val = get_uint(base), 4)
+                  : $1 === "f"  ? (val = get_float(base), 4)
+                  : $1 === "s"  ? (val = get_string(get_uint(base)), 4)
+                  : $1 === "lf" ? (val = get_double(base), 8)
+                  :               (val = getInt(base), 4)
+                  , val;
+            })
+            : s;
+    }
+
+
+    let ctx = {
+        env: {
+            memory,
+            memoryBase: 1024,
+            //table: new WebAssembly.Table({initial: 0, element: 'anyfunc'}),
+            //tableBase: 0,
+            grow_memory,
+            _grow: grow_memory,
+            _abort: () => {},
+        }
+    };
+
+
+    function values() {
+        return new Array(16).fill(0).map(_ => Math.random());
+    }
+
+    let ITERS = 100000;
+    let FIRST = values();
+    let VALUES = new Array(ITERS).fill(0).map(_ => values());
+
+
+    function view(address) {
+        return F32.subarray(address >> 2, (address >> 2) + 16);
+    }
+
+    async function one() {
+        let code = fetch("./mat4.wasm");
+        let {instance} = await WebAssembly.instantiateStreaming(code, ctx);
+        let {create, destroy, set, multiply} = instance.exports;
+
+        let ctor = _ => set(create(), ...values());
+
+        let a = ctor();
+        console.log(a, view(a));
+        let b = ctor();
+        console.log(b, view(b));
+        let out = multiply(create(), a, b);
+        console.log(out, view(out));
+
+        destroy(out);
+        destroy(b);
+        destroy(a);
+    }
+
+    async function wasm() {
+        let code = fetch("./mat4.wasm");
+        let {instance} = await WebAssembly.instantiateStreaming(code, ctx);
+        let {create, destroy, set, multiply} = instance.exports;
+
+        let ctor = values => set(create(), ...values);
+        let a = ctor(FIRST);
+        let matrices = VALUES.map(ctor);
+
+        let start = performance.now();
+        let arr;
+        for (let b of matrices) {
+            let out = multiply(create(), a, b);
+            //console.log(a, b, out);
+            arr = view(out);
+            destroy(out);
+        }
+        let stop = performance.now();
+        console.log("last wasm result", arr);
+        console.log("wasm", stop - start);
+    }
+
+    function native() {
+        let ctor = values => new DOMMatrix(values);
+        let a = ctor(FIRST);
+        let matrices = VALUES.map(ctor);
+
+        let start = performance.now();
+        let arr;
+        for (let b of matrices) {
+            let out = a.multiply(b);
+            arr = out.toFloat32Array();
+        }
+        let stop = performance.now();
+        console.log("last DOMMatrix result", arr);
+        console.log("DOMMatrix", stop - start);
+    }
+
+    function js() {
+        let ctor = values => js_set(js_create(), ...values);
+        let a = ctor(FIRST);
+        let matrices = VALUES.map(ctor);
+
+        let start = performance.now();
+        for (let b of matrices) {
+            prod = js_mul(js_create(), a, b);
+        }
+        let stop = performance.now();
+        console.log("last js result", prod);
+        console.log("js", stop - start);
+    }
+</script>
+
+<button onclick="js()">js</button>
+<button onclick="native()">DOMMatrix</button>
+<button onclick="wasm()">wasm</button>
+<button onclick="one()">one</button>
+
